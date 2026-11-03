@@ -4,3 +4,13 @@ logs/
 shots/
 __pycache__/
 *.pyc
+
+# Android / Gradle
+android/**/build/
+android/.gradle/
+android/local.properties
+.gradle/
+
+# 서명키는 절대 커밋하지 않음 (암호화본 release.jks.enc 만 허용)
+*.jks
+*.keystore
