@@ -29,17 +29,33 @@ interface Device {
     fun finish()
 }
 
+data class ConfirmRequest(val summary: String, val shotPath: String, val timeoutSec: Int)
+
+/** 주문 제출 직전 사용자 승인. 승인=true, 거부/시간초과=false. 응답이 올 때까지(최대 timeoutSec) 블록. */
+interface Confirmer {
+    fun confirm(req: ConfirmRequest): Boolean
+}
+
+/** status: ok | unconfirmed | dry_run | cancelled */
 data class ExecResult(val status: String, val submitted: Boolean, val shot: String = "")
 
 /**
  * config.flows 의 step 을 순서대로 실행해 신한앱에서 주문을 낸다.
  *
  * step(do): tap / tap_xy / type / wait / wait_for / key(BACK|HOME) / swipe / shot
- * 공통 옵션: "when": "market"|"limit", "final": true(실제 제출 단계; dry_run 이면 직전에 중단),
- *            "optional": true(요소가 없으면 건너뜀), "timeout": 초
- * 템플릿 변수: {code} {name} {qty} {price} {side}
+ * 공통 옵션: "when": 주문유형 키 | "priced"(시장가 제외) | "always" | 배열,
+ *            "final": true(실제 제출 단계), "optional": true(요소 없으면 건너뜀), "timeout": 초
+ * 템플릿 변수: {ticker} {ticker_re}(정규식용) {name} {exchange} {qty} {price} {stop_price}
+ *              {side} {order_type} {order_type_label}(앱 화면의 주문유형 문구)
+ *
+ * 제출 직전 순서: flows.<side>.verify 전부 통과 → 스크린샷 → (dry_run 이면 여기서 중단)
+ *                → 사용자 승인(confirm.required) → verify 재검증 → final step 실행
  */
-class Executor(private val device: Device, private val log: (String) -> Unit = {}) {
+class Executor(
+    private val device: Device,
+    private val confirmer: Confirmer? = null,
+    private val log: (String) -> Unit = {},
+) {
 
     fun execute(cfg: Config, sig: Signal): ExecResult {
         val flow = cfg.flow(sig.side)
@@ -47,18 +63,28 @@ class Executor(private val device: Device, private val log: (String) -> Unit = {
         if (flow.steps.none { it.optBoolean("final", false) }) {
             throw StepException("flow 에 final:true 단계가 없음 (주문 제출 버튼 지정 필요)")
         }
+        if (cfg.requireVerify && flow.verify.none { it.toString().contains("{ticker") }) {
+            throw StepException("flows.${sig.side}.verify 에 티커 검증이 없음")
+        }
         val pkg = cfg.appPackage
         if (pkg.isEmpty()) throw StepException("app.package 미설정")
         val pkgs = setOf(pkg) + cfg.extraPackages
-        val sym = cfg.symbols[sig.code] ?: throw StepException("허용되지 않은 종목: ${sig.code}")
+        val sym = cfg.symbols[sig.ticker] ?: throw StepException("허용되지 않은 티커: ${sig.ticker}")
         val dry = cfg.dryRun
-        val mode = if (cfg.priceMode == "limit_from_signal") "limit" else "market"
+        val confirmNeeded = cfg.confirmRequired && !dry
+        if (confirmNeeded && confirmer == null) throw StepException("주문 확인 수단이 없음 (confirm.required=true)")
+        val type = sig.orderType
         val vals = mapOf(
-            "code" to sig.code,
+            "ticker" to sig.ticker,
+            "ticker_re" to sig.ticker.replace(".", "\\."),
             "name" to sym.name,
+            "exchange" to sym.exchange,
             "qty" to sig.qty.toString(),
-            "price" to (sig.price?.toString() ?: ""),
+            "price" to (sig.price?.toPlainString() ?: ""),
+            "stop_price" to (sig.stopPrice?.toPlainString() ?: ""),
             "side" to sig.side,
+            "order_type" to type.key,
+            "order_type_label" to cfg.orderTypeLabel(type),
         )
 
         try {
@@ -74,21 +100,31 @@ class Executor(private val device: Device, private val log: (String) -> Unit = {
             }
 
             for ((i, step) in flow.steps.withIndex()) {
-                val whenMode = step.optString("when", "always")
-                if (whenMode != "always" && whenMode != mode) continue
+                if (!whenMatches(step.opt("when"), type)) continue
 
                 if (step.optBoolean("final", false)) {
-                    val before = device.screenshot("before_confirm_${sig.side}_${sig.code}")
+                    verifyScreen(flow, vals, pkgs, type)
+                    val before = device.screenshot("before_confirm_${sig.side}_${sig.ticker}")
                     if (dry) {
                         log("[DRY RUN] 최종 제출 직전 중단 $before")
                         return ExecResult("dry_run", false, before)
+                    }
+                    if (confirmNeeded) {
+                        val approved = confirmer!!.confirm(ConfirmRequest(sig.toString(), before, cfg.confirmTimeoutSec))
+                        if (!approved) {
+                            log("사용자 미승인/시간초과 — 주문 취소")
+                            return ExecResult("cancelled", false, before)
+                        }
+                        // 대기 중 화면이 바뀌지 않았는지 재검증
+                        ensureForeground(pkgs)
+                        verifyScreen(flow, vals, pkgs, type)
                     }
                     runStep(step, vals, pkgs)
                     return afterSubmit(flow, pkgs, vals, sig)
                 }
                 runStep(step, vals, pkgs)
                 if (step.getString("do") == "shot") {
-                    device.screenshot("${step.optString("name", "step$i")}_${sig.side}_${sig.code}")
+                    device.screenshot("${step.optString("name", "step$i")}_${sig.side}_${sig.ticker}")
                 }
             }
             throw StepException("final 단계에 도달하지 못함")
@@ -97,11 +133,22 @@ class Executor(private val device: Device, private val log: (String) -> Unit = {
         }
     }
 
+    /** 주문 직전 화면에 의도한 티커/수량/가격 등이 실제로 표시되는지 확인 (하나라도 없으면 중단). */
+    private fun verifyScreen(flow: Flow, vals: Map<String, String>, pkgs: Set<String>, type: OrderType) {
+        for (v in flow.verify) {
+            if (!whenMatches(v.opt("when"), type)) continue
+            val sel = fmtSel(v.getJSONObject("sel"), vals)
+            if (waitNode(pkgs, sel, 5_000) == null) {
+                throw StepException("주문 전 화면 검증 실패 [${v.optString("label", "verify")}]: $sel")
+            }
+        }
+    }
+
     /** 제출 이후 오류는 '주문이 나갔을 수 있음' → submitted=true 로 반환(중복 주문 방지). */
     private fun afterSubmit(flow: Flow, pkgs: Set<String>, vals: Map<String, String>, sig: Signal): ExecResult {
         return try {
             val ok = flow.success?.let { waitNode(pkgs, fmtSel(it, vals), 10_000) != null } ?: true
-            ExecResult(if (ok) "ok" else "unconfirmed", true, device.screenshot("after_submit_${sig.side}_${sig.code}"))
+            ExecResult(if (ok) "ok" else "unconfirmed", true, device.screenshot("after_submit_${sig.side}_${sig.ticker}"))
         } catch (e: Exception) {
             log("제출 후 확인 중 오류: ${e.message}")
             ExecResult("unconfirmed", true, "")
@@ -130,8 +177,9 @@ class Executor(private val device: Device, private val log: (String) -> Unit = {
         }
     }
 
+    // {name} 형태만 치환. {2} 같은 정규식 수량자(숫자)는 그대로 둠. 알 수 없는 변수명은 오류.
     private fun fmt(s: String, vals: Map<String, String>): String =
-        Regex("\\{(\\w+)}").replace(s) { m ->
+        Regex("\\{([A-Za-z_]\\w*)}").replace(s) { m ->
             vals[m.groupValues[1]] ?: throw StepException("알 수 없는 변수: {${m.groupValues[1]}}")
         }
 
@@ -161,16 +209,13 @@ class Executor(private val device: Device, private val log: (String) -> Unit = {
                 if (!device.tap(xy.getInt(0), xy.getInt(1))) throw StepException("탭 실패(좌표)")
             }
             "type" -> {
-                var node: UiNode? = null
-                if (step.has("sel")) {
-                    node = need(step, vals, pkgs) ?: return
-                    tapNode(node)
-                    device.sleep(300)
-                }
+                if (!step.has("sel")) throw StepException("type step 에는 sel 이 필요함")
+                val node = need(step, vals, pkgs) ?: return
+                tapNode(node)
+                device.sleep(300)
                 var text = fmt(step.getString("text"), vals)
-                if (!step.optBoolean("clear", true) && node != null) text = node.text + text
-                val target = node ?: throw StepException("type step 에는 sel 이 필요함")
-                if (!device.setText(target, text)) throw StepException("텍스트 입력 실패: '$text'")
+                if (!step.optBoolean("clear", true)) text = node.text + text
+                if (!device.setText(node, text)) throw StepException("텍스트 입력 실패: '$text'")
             }
             "wait" -> device.sleep((step.optDouble("sec", 1.0) * 1000).toLong())
             "wait_for" -> {

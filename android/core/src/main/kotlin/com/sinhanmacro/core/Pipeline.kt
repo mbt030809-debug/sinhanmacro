@@ -2,19 +2,20 @@ package com.sinhanmacro.core
 
 import java.time.ZonedDateTime
 
-/** 신호 텍스트 → 파싱 → 리스크 검사 → 주문 실행. 한 번에 하나씩(단일 스레드)에서 호출할 것. */
+/** 신호 텍스트 → 파싱 → 리스크 검사 → (화면 검증 + 사용자 승인) → 주문 실행. 한 번에 하나씩(단일 스레드)에서 호출할 것. */
 class Pipeline(
     private val cfgProvider: () -> Config,
     private val device: Device,
     private val state: StateRepo,
     private val notify: (String) -> Unit,
     private val killed: () -> Boolean,
+    private val confirmer: Confirmer? = null,
     private val log: (String) -> Unit = {},
     private val clock: () -> ZonedDateTime = { nowKst() },
 ) {
     private val risk = Risk(state)
 
-    /** 신호 1건 처리. 무시/차단/실패 시 null. [execute]=false 면 검사까지만. */
+    /** 신호 1건 처리. 무시/차단/취소/실패 시 null. [execute]=false 면 검사까지만. */
     fun processText(text: String, execute: Boolean = true): Signal? {
         val cfg = cfgProvider()
         val sig = try {
@@ -37,9 +38,9 @@ class Pipeline(
             return sig
         }
 
-        notify("${if (cfg.dryRun) "[DRY] " else ""}주문 시작: $sig")
+        notify("${if (cfg.dryRun) "[DRY] " else ""}주문 준비: $sig")
         val res = try {
-            Executor(device, log).execute(cfg, sig)
+            Executor(device, confirmer, log).execute(cfg, sig)
         } catch (e: NotLoggedInException) {
             notify("🔒 로그인 필요 — 주문 중단: ${e.message} | $sig")
             return null
@@ -52,9 +53,10 @@ class Pipeline(
         val icon = when (res.status) {
             "ok" -> "✅"
             "unconfirmed" -> "⚠️ 접수 확인 필요"
+            "cancelled" -> "🚫 취소(미승인/시간초과)"
             else -> "🧪"
         }
         notify("$icon ${res.status}: $sig ${res.shot}")
-        return sig
+        return if (res.status == "cancelled") null else sig
     }
 }

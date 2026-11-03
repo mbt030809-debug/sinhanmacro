@@ -52,6 +52,8 @@ object Engine {
         private set
     lateinit var device: AccessibilityDevice
         private set
+    lateinit var confirmer: NotificationConfirmer
+        private set
     private lateinit var pipeline: Pipeline
 
     fun attach(a: Application) {
@@ -59,12 +61,14 @@ object Engine {
         prefs = a.getSharedPreferences("macro", Context.MODE_PRIVATE)
         state = StateRepo(FileStateStore(File(a.filesDir, "state.json")))
         device = AccessibilityDevice(a)
+        confirmer = NotificationConfirmer(a)
         pipeline = Pipeline(
             cfgProvider = { config() },
             device = device,
             state = state,
             notify = { notify(it) },
             killed = { isKilled() },
+            confirmer = confirmer,
             log = { log(it) },
         )
         log("앱 시작 v${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})")
@@ -203,6 +207,14 @@ object Engine {
             } catch (e: Exception) {
                 notify("❌ 처리 오류: ${e.javaClass.simpleName} ${e.message}")
             }
+        }
+    }
+
+    /** 승인 알림이 제대로 뜨는지 확인하는 테스트 (주문과 무관). */
+    fun testConfirm() {
+        worker.execute {
+            val ok = confirmer.confirm(com.sinhanmacro.core.ConfirmRequest("테스트: 매수 TMV 1주 지정가 @1.00 (실제 주문 아님)", "", 30))
+            log(if (ok) "확인 테스트: 승인됨" else "확인 테스트: 거부 또는 시간초과")
         }
     }
 

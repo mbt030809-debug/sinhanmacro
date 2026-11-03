@@ -63,5 +63,9 @@
         <receiver
             android:name=".UpdateReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".ConfirmReceiver"
+            android:exported="false" />
     </application>
 </manifest>

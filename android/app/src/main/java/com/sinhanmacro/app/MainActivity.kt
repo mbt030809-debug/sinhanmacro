@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
@@ -28,6 +29,8 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var logView: TextView
     private lateinit var killButton: Button
+    private lateinit var confirmBox: LinearLayout
+    private lateinit var confirmText: TextView
     private lateinit var signalInput: EditText
     private lateinit var keywordInput: EditText
 
@@ -91,6 +94,24 @@ class MainActivity : Activity() {
         }
         col.addView(status)
 
+        // 주문 승인 대기 박스 (승인 알림과 동일 기능 — 알림이 안 보일 때 여기서 승인)
+        confirmBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFFFFE0B2.toInt())
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            visibility = View.GONE
+        }
+        confirmText = TextView(this).apply {
+            textSize = 15f
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        confirmBox.addView(confirmText)
+        val confirmRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        confirmRow.addView(btn("승인") { answerConfirm(true) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        confirmRow.addView(btn("거부") { answerConfirm(false) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        confirmBox.addView(confirmRow)
+        col.addView(confirmBox)
+
         col.addView(title("1. 권한 설정"))
         col.addView(btn("접근성 서비스 설정 열기") { open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) })
         col.addView(btn("알림 접근 설정 열기") { open(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
@@ -120,6 +141,7 @@ class MainActivity : Activity() {
         }
         col.addView(keywordInput)
         col.addView(btn("설치된 앱 패키지명 검색") { searchPackages() })
+        col.addView(btn("주문 승인 알림 테스트 (실제 주문 아님)") { Engine.testConfirm() })
         col.addView(btn("5초 뒤 현재 화면 요소 덤프 (신한앱으로 이동)") {
             Toast.makeText(this, "5초 안에 덤프할 화면으로 이동하세요", Toast.LENGTH_LONG).show()
             handler.postDelayed({
@@ -157,6 +179,12 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             Toast.makeText(this, "열 수 없음: ${e.message}", Toast.LENGTH_LONG).show()
         }
+    }
+
+    private fun answerConfirm(approved: Boolean) {
+        val p = Engine.confirmer.current() ?: return
+        Engine.log(if (approved) "주문 승인 (앱 화면)" else "주문 거부 (앱 화면)")
+        Engine.confirmer.resolve(p.id, approved)
     }
 
     private fun submit(execute: Boolean) {
@@ -204,9 +232,24 @@ class MainActivity : Activity() {
             appendLine("설치 허용: ${ok(packageManager.canRequestPackageInstalls())}")
             appendLine("모드: ${if (cfg.dryRun) "🧪 DRY RUN (제출 직전 중단)" else "⚠️ 실전 주문"}")
             appendLine("킬스위치: ${if (Engine.isKilled()) "🛑 ON (주문 차단)" else "OFF"}")
+            appendLine(
+                "제출 전 승인: " + if (cfg.confirmRequired) "✅ 필요 (${cfg.confirmTimeoutSec}초 내)" else "⚠️ 꺼짐 (자동 제출)",
+            )
+            appendLine(
+                "주문유형: 기본 ${cfg.orderTypeLabel(cfg.defaultOrderType)} / 허용 " +
+                    cfg.allowedOrderTypes.joinToString { cfg.orderTypeLabel(it) },
+            )
             appendLine("신한앱: ${cfg.appPackage.ifEmpty { "(미설정)" }}")
             appendLine("신호앱: ${cfg.sourcePackages.ifEmpty { listOf("(미설정)") }}")
-            append("허용 종목: ${cfg.symbols.keys.ifEmpty { setOf("(없음)") }}")
+            append("허용 티커(정확히 일치): ${cfg.symbols.keys.ifEmpty { setOf("(없음)") }}")
+        }
+        val pending = Engine.confirmer.current()
+        if (pending != null) {
+            val left = ((pending.deadlineMs - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
+            confirmText.text = "주문 승인 대기 (${left}초 남음)\n${pending.summary}"
+            confirmBox.visibility = View.VISIBLE
+        } else {
+            confirmBox.visibility = View.GONE
         }
         killButton.text = if (Engine.isKilled()) "킬스위치 해제 (주문 재개)" else "킬스위치 켜기 (모든 주문 차단)"
         val text = Engine.logText()

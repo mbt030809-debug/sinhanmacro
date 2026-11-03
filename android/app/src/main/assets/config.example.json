@@ -16,41 +16,80 @@
   },
 
   "symbols": {
-    "005930": { "name": "삼성전자", "qty": 1, "max_qty": 3 }
+    "_note": "키는 신호에 적힌 티커와 대소문자까지 정확히 같아야 매칭됨. 등록되지 않은 티커는 주문 안 함",
+    "TMV": { "name": "Direxion Daily 20+ Year Treasury Bear 3X", "exchange": "아멕스", "qty": 1, "max_qty": 3 }
   },
 
-  "order": { "price_mode": "market" },
+  "order": {
+    "_note": "default_type: 신호에 주문유형이 없을 때 사용. allowed_types 밖의 유형은 차단. 선택지: limit(지정가) market(시장가) loo loc stop_limit(Stop limit) vwap(Vwap 지정가) twap(Twap 지정가). stop_limit/vwap/twap 는 입력란이 더 있어 flows 에 단계를 추가한 뒤 허용할 것",
+    "default_type": "limit",
+    "allowed_types": ["limit", "market", "loo", "loc"],
+    "type_labels": {}
+  },
+
+  "confirm": {
+    "_note": "required=true: 제출 직전에 알림(승인/거부 버튼)으로 확인. timeout_sec 안에 승인 없으면 취소",
+    "required": true,
+    "timeout_sec": 120
+  },
+
+  "safety": { "require_verify": true },
 
   "risk": {
+    "_note": "미국장 정규장 기준(뉴욕 시간, 서머타임 자동). 프리/애프터까지 허용하려면 trading_hours 를 넓힘. max_order_value(USD)를 넣으면 지정가류 주문의 수량×가격 상한 검사",
     "max_orders_per_day": 5,
     "dedupe_minutes": 30,
     "enforce_trading_hours": true,
-    "trading_hours": ["09:00", "15:20"]
+    "timezone": "America/New_York",
+    "trading_hours": ["09:30", "16:00"]
   },
 
   "flows": {
     "buy": {
       "steps": [
-        { "_note": "아래 셀렉터는 전부 예시. 앱의 '화면 요소 덤프' 로 실제 요소를 확인해 교체", "do": "wait", "sec": 0.5 },
-        { "do": "tap", "sel": { "text": "주식주문" } },
-        { "do": "tap", "sel": { "text": "종목검색" } },
-        { "do": "type", "sel": { "class": "EditText" }, "text": "{code}" },
-        { "do": "tap", "sel": { "text_contains": "{name}" } },
+        { "_note": "아래 셀렉터 중 text '매수', '주문유형 선택' 및 주문유형 문구는 앱 화면 기준. 나머지(id_contains 등)는 예시 → 앱의 '화면 요소 덤프'로 확인해 교체", "do": "wait", "sec": 0.5 },
+        { "do": "tap", "sel": { "id_contains": "search" } },
+        { "do": "type", "sel": { "class": "EditText" }, "text": "{ticker}" },
+        { "do": "tap", "sel": { "text_regex": "^{ticker_re}(\\s|$)" } },
+        { "do": "wait_for", "sel": { "text": "매수" } },
         { "do": "tap", "sel": { "text": "매수" } },
+        { "do": "tap", "sel": { "id_contains": "order_type" } },
+        { "do": "wait_for", "sel": { "text": "주문유형 선택" } },
+        { "do": "tap", "sel": { "text": "{order_type_label}" } },
         { "do": "type", "sel": { "id_contains": "qty" }, "text": "{qty}" },
-        { "do": "type", "when": "limit", "sel": { "id_contains": "price" }, "text": "{price}" },
-        { "do": "tap", "when": "market", "sel": { "text": "시장가" } },
+        { "do": "type", "when": "priced", "sel": { "id_contains": "price" }, "text": "{price}" },
+        { "do": "type", "when": "stop_limit", "sel": { "id_contains": "stop" }, "text": "{stop_price}" },
         { "do": "shot", "name": "filled_form" },
-        { "do": "tap", "sel": { "text": "매수주문" }, "final": true }
+        { "do": "tap", "sel": { "text": "매수하기" }, "final": true }
+      ],
+      "verify": [
+        { "label": "티커", "sel": { "text_regex": "^{ticker_re}(\\s|$)" } },
+        { "label": "주문유형", "sel": { "text": "{order_type_label}" } },
+        { "label": "수량", "sel": { "id_contains": "qty", "text": "{qty}" } },
+        { "label": "가격", "when": "priced", "sel": { "id_contains": "price", "text": "{price}" } }
       ],
       "success": { "text_contains": "접수" }
     },
     "sell": {
       "steps": [
-        { "_note": "매도 흐름도 같은 방식으로 작성", "do": "wait", "sec": 0.5 },
-        { "do": "tap", "sel": { "text": "주식주문" } },
+        { "_note": "매도 흐름도 같은 방식으로 작성 (탭만 '매도')", "do": "wait", "sec": 0.5 },
+        { "do": "tap", "sel": { "id_contains": "search" } },
+        { "do": "type", "sel": { "class": "EditText" }, "text": "{ticker}" },
+        { "do": "tap", "sel": { "text_regex": "^{ticker_re}(\\s|$)" } },
+        { "do": "wait_for", "sel": { "text": "매도" } },
         { "do": "tap", "sel": { "text": "매도" } },
-        { "do": "tap", "sel": { "text": "매도주문" }, "final": true }
+        { "do": "tap", "sel": { "id_contains": "order_type" } },
+        { "do": "wait_for", "sel": { "text": "주문유형 선택" } },
+        { "do": "tap", "sel": { "text": "{order_type_label}" } },
+        { "do": "type", "sel": { "id_contains": "qty" }, "text": "{qty}" },
+        { "do": "type", "when": "priced", "sel": { "id_contains": "price" }, "text": "{price}" },
+        { "do": "tap", "sel": { "text": "매도하기" }, "final": true }
+      ],
+      "verify": [
+        { "label": "티커", "sel": { "text_regex": "^{ticker_re}(\\s|$)" } },
+        { "label": "주문유형", "sel": { "text": "{order_type_label}" } },
+        { "label": "수량", "sel": { "id_contains": "qty", "text": "{qty}" } },
+        { "label": "가격", "when": "priced", "sel": { "id_contains": "price", "text": "{price}" } }
       ],
       "success": { "text_contains": "접수" }
     }
