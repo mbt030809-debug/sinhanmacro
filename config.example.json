@@ -1,0 +1,63 @@
+{
+  "dry_run": true,
+
+  "adb": { "bin": "adb", "serial": "localhost:5555" },
+
+  "app": {
+    "package": "여기에_신한앱_패키지명",
+    "launch_wait_sec": 6,
+    "login_check": { "text": "로그인 후 메인화면에만 있는 문구" }
+  },
+
+  "signal": {
+    "source_packages": ["여기에_신호앱_패키지명"],
+    "title_regex": "",
+    "poll_sec": 5,
+    "skip_existing_on_start": true,
+    "buy_words": ["매수", "BUY"],
+    "sell_words": ["매도", "SELL"]
+  },
+
+  "symbols": {
+    "005930": { "name": "삼성전자", "qty": 1, "max_qty": 3 }
+  },
+
+  "order": { "price_mode": "market" },
+
+  "risk": {
+    "max_orders_per_day": 5,
+    "dedupe_minutes": 30,
+    "enforce_trading_hours": true,
+    "trading_hours": ["09:00", "15:20"]
+  },
+
+  "flows": {
+    "buy": {
+      "steps": [
+        { "_note": "아래 셀렉터는 전부 예시. `dump` 로 실제 화면 요소를 확인해 교체", "do": "wait", "sec": 0.5 },
+        { "do": "tap", "sel": { "text": "주식주문" } },
+        { "do": "tap", "sel": { "text": "종목검색" } },
+        { "do": "type", "sel": { "class": "EditText" }, "text": "{code}" },
+        { "do": "tap", "sel": { "text_contains": "{name}" } },
+        { "do": "tap", "sel": { "text": "매수" } },
+        { "do": "type", "sel": { "id_contains": "qty" }, "text": "{qty}" },
+        { "do": "type", "when": "limit", "sel": { "id_contains": "price" }, "text": "{price}" },
+        { "do": "tap", "when": "market", "sel": { "text": "시장가" } },
+        { "do": "shot", "name": "filled_form" },
+        { "do": "tap", "sel": { "text": "매수주문" }, "final": true }
+      ],
+      "success": { "text_contains": "접수" }
+    },
+    "sell": {
+      "steps": [
+        { "_note": "매도 흐름도 같은 방식으로 작성", "do": "wait", "sec": 0.5 },
+        { "do": "tap", "sel": { "text": "주식주문" } },
+        { "do": "tap", "sel": { "text": "매도" } },
+        { "do": "tap", "sel": { "text": "매도주문" }, "final": true }
+      ],
+      "success": { "text_contains": "접수" }
+    }
+  },
+
+  "telegram": { "token": "", "chat_id": "" }
+}
